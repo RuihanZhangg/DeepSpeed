@@ -254,6 +254,15 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
             self._set_zero_group_parallelism()
             zero_param_parallel_group = groups._get_zero_param_intra_parallel_group()
 
+        # [Madeline] Parse forward cache configuration from ds_config
+        self._madeline_forward_cache_config = None
+        zero_config = ds_config.zero_config
+        if hasattr(zero_config, 'forward_cache') and zero_config.forward_cache is not None:
+            from madeline.config import MadelineConfig
+            self._madeline_forward_cache_config = MadelineConfig.from_dict(zero_config.forward_cache)
+            if self._madeline_forward_cache_config.enabled:
+                print_rank_0("[Madeline] Forward cache enabled via config", force=True)
+
         self.parameter_offload = self.initialize_ds_offload(
             module=module,
             timers=timers,
@@ -273,6 +282,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
             zero_quantized_nontrainable_weights=zero_quantized_nontrainable_weights,
             zero_module_granularity_threshold=zero_module_granularity_threshold,
             log_trace_cache_warnings=log_trace_cache_warnings,
+            forward_cache_config=self._madeline_forward_cache_config,
         )
 
         self.persistent_parameters = self.parameter_offload.persistent_parameters
@@ -553,6 +563,7 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
         zero_quantized_nontrainable_weights,
         zero_module_granularity_threshold,
         log_trace_cache_warnings,
+        forward_cache_config=None,
     ):
         return DeepSpeedZeRoOffload(module=module,
                                     timers=timers,
@@ -571,7 +582,8 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
                                     zero_quantized_weights=zero_quantized_weights,
                                     zero_quantized_nontrainable_weights=zero_quantized_nontrainable_weights,
                                     zero_module_granularity_threshold=zero_module_granularity_threshold,
-                                    log_trace_cache_warnings=log_trace_cache_warnings)
+                                    log_trace_cache_warnings=log_trace_cache_warnings,
+                                    forward_cache_config=forward_cache_config)
 
     def _get_trainable_parameter_groups(self):
         param_groups = []

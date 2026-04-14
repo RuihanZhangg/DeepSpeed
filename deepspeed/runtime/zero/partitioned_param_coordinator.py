@@ -90,6 +90,7 @@ class PartitionedParameterCoordinator:
         zero_quantized_nontrainable_weights=False,
         fast_sharding_for_leaf_module=False,
         log_trace_cache_warnings=False,
+        forward_cache_manager=None,
     ) -> None:
         # mapping of param -> handle for each param that is currently in flight
         self.__inflight_param_registry = inflight_param_registry
@@ -146,6 +147,12 @@ class PartitionedParameterCoordinator:
         # This is only needed during backward pass; forward pass is single-threaded.
         self.__ongoing_fetch_leaf_module_events = collections.defaultdict(threading.Event)
         self.__leaf_module_lock = threading.Lock()
+
+        # [Madeline] Forward-pass parameter cache manager.
+        # When set, the coordinator will skip releasing cached sub-modules'
+        # parameters during the forward pass, allowing them to be reused in
+        # the backward pass without an additional all-gather.
+        self.__forward_cache_manager = forward_cache_manager
 
     """Tracing and Tracking
     TODO. consider performing trace before initializing PartitionedParameterCoordinator
@@ -257,6 +264,25 @@ class PartitionedParameterCoordinator:
                 print_rank_0(
                     f"completed record trace of {len(self.__submodule_order)} sub modules: {[m.ds_id for m in self.__submodule_order]}",
                     force=False)
+
+                # [Madeline] Initialize the forward cache manager now that the
+                # trace is complete and we know the sub-module execution order.
+                if self.__forward_cache_manager is not None:
+                    self.__forward_cache_manager.initialize(
+                        submodule_order=self.__submodule_order,
+                    )
+                    # Increase the max available params budget to account for
+                    # cached params, so they don't throttle prefetching.
+                    if self.__forward_cache_manager.is_active:
+                        from madeline.memory_profiler import MemoryProfiler
+                        sizes = MemoryProfiler.collect_submodule_sizes(self.__submodule_order)
+                        cached_numel = self.__forward_cache_manager.get_cached_numel(sizes)
+                        self.__max_n_available_params += cached_numel
+                        print_rank_0(
+                            f"[Madeline] Increased max_n_available_params by {cached_numel} "
+                            f"to {self.__max_n_available_params} to accommodate cached params",
+                            force=True)
+
             else:
                 # Enable trace recording for next forward/backward pass
                 self.__trace_mode = ZeRoTraceMode.RECORD
@@ -273,6 +299,10 @@ class PartitionedParameterCoordinator:
         self.__profiler.reset_events()
         # Clear leaf module fetch events for clean state
         self.__ongoing_fetch_leaf_module_events.clear()
+
+        # [Madeline] Reset per-iteration cache state
+        if self.__forward_cache_manager is not None:
+            self.__forward_cache_manager.on_step_end()
 
     def _dump_params(self, tag, sub_module, params, step_id=None):
         if step_id is None:
@@ -298,6 +328,10 @@ class PartitionedParameterCoordinator:
         2. kick off fetch for next few parameters we will need later (prefetch)
         3. block on parameters in immediately required sub module
         """
+        # [Madeline] Update forward/backward phase tracking for cache manager
+        if self.__forward_cache_manager is not None:
+            self.__forward_cache_manager.set_forward_phase(forward)
+
         # For leaf modules during backward pass, autograd may trigger hooks from multiple
         # threads concurrently (e.g., when a module returns multiple tensors). We need to
         # serialize access to prevent race conditions in parameter state management.
@@ -470,7 +504,17 @@ class PartitionedParameterCoordinator:
     def release_sub_module(self, submodule: Module, forward=False) -> None:
         """release the parameters of a sub module, assuming they meet conditions to
         be released."""
-        #print_rank_0(f"release_sub_module {'fwd' if forward else 'bwd'}: {debug_module2name_id(submodule)}", force=False)
+        # [Madeline] If the cache manager indicates this module should be cached
+        # during the forward phase, skip releasing its parameters entirely.
+        # The params remain AVAILABLE so that backward pass fetch_sub_module
+        # will find fetch_numel == 0 and skip the all-gather automatically.
+        if (self.__forward_cache_manager is not None
+                and self.__forward_cache_manager.should_cache(submodule.ds_id)):
+            # Still discard active sub-module tracking to avoid assertion errors
+            for param in iter_params(submodule, recurse=z3_leaf_module(submodule)):
+                param.ds_active_sub_modules.discard(submodule.ds_id)
+            return
+
         params_to_release = (self.__params_to_release(submodule, self.__step_id) if self.is_complete_trace() else set(
             p.ds_id for p in iter_params(submodule, recurse=z3_leaf_module(submodule))))
 

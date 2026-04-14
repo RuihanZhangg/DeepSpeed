@@ -378,6 +378,21 @@ class DeepSpeedZeroConfig(DeepSpeedConfigModel):
     Configuration for modules that should be treated as ZeRO3 leaf modules.
     """
 
+    forward_cache: Optional[Dict[str, Any]] = None
+    """
+    [Madeline] Configuration for forward-pass parameter caching.
+    When enabled, selected sub-module parameters are retained in GPU memory
+    after the forward pass, eliminating redundant all-gather in the backward pass.
+    Example:
+    "forward_cache": {
+        "enabled": true,
+        "auto_profile": true,
+        "reserved_memory_ratio": 0.1,
+        "gain_weights": {"position": 0.5, "efficiency": 0.5},
+        "verbose": false
+    }
+    """
+
     # Validators
     @model_validator(mode="after")
     def overlap_comm_valid(self):

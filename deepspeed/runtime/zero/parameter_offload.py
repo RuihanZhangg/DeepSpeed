@@ -108,6 +108,7 @@ class DeepSpeedZeRoOffload(object):
         zero_quantized_nontrainable_weights=False,
         zero_module_granularity_threshold=0,
         log_trace_cache_warnings=False,
+        forward_cache_config=None,
     ):
 
         see_memory_usage("DeepSpeedZeRoOffload initialize [begin]", force=False)
@@ -162,6 +163,16 @@ class DeepSpeedZeRoOffload(object):
             self._set_z3_leaf_modules_by_threshold(module, zero_module_granularity_threshold)
             self.fast_sharding_for_leaf_module = True
 
+        # [Madeline] Create forward cache manager if configured
+        self.__forward_cache_manager = None
+        if forward_cache_config is not None and forward_cache_config.enabled:
+            from madeline.cache_manager import ForwardCacheManager
+            self.__forward_cache_manager = ForwardCacheManager(
+                config=forward_cache_config,
+                device=get_accelerator().current_device_name(),
+            )
+            print_rank_0("[Madeline] Forward cache manager created", force=True)
+
         self.param_coordinator = PartitionedParameterCoordinator(
             prefetch_bucket_sz=self._prefetch_bucket_sz,
             max_reuse_distance_in_numel=self._max_reuse_distance_in_numel,
@@ -174,6 +185,7 @@ class DeepSpeedZeRoOffload(object):
             zero_quantized_nontrainable_weights=self.zero_quantized_nontrainable_weights,
             fast_sharding_for_leaf_module=self.fast_sharding_for_leaf_module,
             log_trace_cache_warnings=self.log_trace_cache_warnings,
+            forward_cache_manager=self.__forward_cache_manager,
         )
 
         self.forward_hooks = []
