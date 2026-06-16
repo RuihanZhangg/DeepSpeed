@@ -536,6 +536,13 @@ class PartitionedParameterCoordinator:
     @torch.no_grad()
     def release_and_reset_all(self, module: Module) -> None:
         """release all module parameters"""
+        # [Madeline] Force the cache manager into backward phase so that
+        # should_cache() returns False for any edge-case path.  This ensures
+        # that no param is accidentally retained as "cached" during the
+        # optimizer step.
+        if self.__forward_cache_manager is not None:
+            self.__forward_cache_manager.set_forward_phase(False)
+
         for param in iter_params(module, recurse=True):
             if param in self.__inflight_param_registry:
                 self.__inflight_param_registry.pop(param).wait()

@@ -204,6 +204,12 @@ class DeepSpeedZeRoOffload(object):
         of modules whose input parameters do not require grad computation do not
         trigger post call and will therefore will remain unpartitioned"""
         self.get_param_coordinator().release_and_reset_all(self.module)
+        # [Madeline] After releasing all params (including cached ones), flush
+        # the CUDA caching allocator so that fragmented "reserved but unallocated"
+        # memory is returned to the GPU.  Without this, optimizer.step() may OOM
+        # because it cannot find a contiguous block for temporary tensors
+        # (e.g., exp_avg_sq_sqrt in Adam/AdamW).
+        get_accelerator().empty_cache()
         for param in iter_params(self.module, recurse=True):
             if param.ds_status != ZeroParamStatus.NOT_AVAILABLE:
                 raise RuntimeError(f"{param.ds_summary()} expected to be released")
