@@ -256,10 +256,16 @@ class DeepSpeedZeroOptimizer_Stage3(ZeROOptimizer):
 
         # [Madeline] Parse forward cache configuration from ds_config
         self._madeline_forward_cache_config = None
-        zero_config = ds_config.zero_config
-        if hasattr(zero_config, 'forward_cache') and zero_config.forward_cache is not None:
+        # ds_config may be a DeepSpeedConfig object or a raw dict depending on caller
+        if isinstance(ds_config, dict):
+            _zero_cfg = ds_config.get('zero_optimization', {})
+            _forward_cache_dict = _zero_cfg.get('forward_cache', None)
+        else:
+            _zero_cfg = getattr(ds_config, 'zero_config', None)
+            _forward_cache_dict = getattr(_zero_cfg, 'forward_cache', None) if _zero_cfg is not None else None
+        if _forward_cache_dict is not None:
             from madeline.config import MadelineConfig
-            self._madeline_forward_cache_config = MadelineConfig.from_dict(zero_config.forward_cache)
+            self._madeline_forward_cache_config = MadelineConfig.from_dict(_forward_cache_dict)
             if self._madeline_forward_cache_config.enabled:
                 print_rank_0("[Madeline] Forward cache enabled via config", force=True)
 
