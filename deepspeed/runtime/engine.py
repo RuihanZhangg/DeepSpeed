@@ -1679,13 +1679,22 @@ class DeepSpeedEngine(Module):
                                         adamw_mode=effective_adam_w_mode,
                                         **zenflow_kwargs)
                 else:
-                    from deepspeed.ops.adam import FusedAdam
-
-                    optimizer = FusedAdam(
-                        model_parameters,
-                        **optimizer_parameters,
-                        adam_w_mode=effective_adam_w_mode,
-                    )
+                    try:
+                        from deepspeed.ops.adam import FusedAdam
+                        optimizer = FusedAdam(
+                            model_parameters,
+                            **optimizer_parameters,
+                            adam_w_mode=effective_adam_w_mode,
+                        )
+                    except Exception as _fused_adam_err:
+                        logger.warning(
+                            f"FusedAdam CUDA build failed ({_fused_adam_err}), "
+                            "falling back to torch.optim.AdamW / torch.optim.Adam."
+                        )
+                        if effective_adam_w_mode:
+                            optimizer = torch.optim.AdamW(model_parameters, **optimizer_parameters)
+                        else:
+                            optimizer = torch.optim.Adam(model_parameters, **optimizer_parameters)
 
         elif self.optimizer_name() == ADAGRAD_OPTIMIZER:
             if self.zero_use_cpu_optimizer():
